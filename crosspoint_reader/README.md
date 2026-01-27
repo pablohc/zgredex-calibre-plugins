@@ -17,7 +17,7 @@ Default settings:
 - Upload path: /
 
 Install:
-1. Download the latest release from the [releases page](https://github.com/daveallie/crosspoint-reader/releases) (or zip the contents of this directory).
+1. Download the latest release from the [releases page](https://github.com/crosspoint-reader/calibre-plugins/releases) (or zip the contents of this directory).
 2. In Calibre: Preferences > Plugins > Load plugin from file.
 3. The device should appear in Calibre once it is discoverable on the network.
 
