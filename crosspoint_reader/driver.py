@@ -1,5 +1,6 @@
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -194,6 +195,72 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
     def free_space(self, end_session=True):
         return 10 * 1024 * 1024 * 1024, 0, 0
 
+    def _format_upload_path(self, mi, original_name):
+        """Format an upload path using the send-to-device template.
+
+        Returns (subdirs, filename) where subdirs is a list of directory
+        components from the template (may be empty for flat templates).
+        """
+        try:
+            from calibre.library.save_to_disk import config as sconfig, get_components
+            from calibre.utils.filenames import ascii_filename
+
+            template = self.save_template()
+            if not template:
+                template = sconfig().parse().send_template
+
+            components = get_components(
+                template, mi, -1, '%b %Y', 250,
+                ascii_filename, to_lowercase=False,
+                replace_whitespace=False, safe_format=True,
+                last_has_extension=False,
+            )
+
+            components = [c.strip() for c in components if c and c.strip()]
+            if not components:
+                return [], original_name
+
+            ext = os.path.splitext(original_name)[1]
+            filename = components[-1] + ext
+            subdirs = components[:-1]
+            return subdirs, filename
+        except Exception as exc:
+            self._log(f'[CrossPoint] template format failed: {exc}')
+            return [], original_name
+
+    def _mkdir_on_device(self, name, path):
+        """Create a directory on device via POST /mkdir.
+
+        Silently ignores 400 errors (folder already exists).
+        Uses urllib directly to avoid _http_post_form which wraps all
+        errors as ControlError.
+        """
+        url = self._http_base() + '/mkdir'
+        body = urllib.parse.urlencode({'name': name, 'path': path}).encode('utf-8')
+        req = urllib.request.Request(url, data=body, method='POST')
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                resp.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 400:
+                self._log(f'[CrossPoint] mkdir ignored (already exists): {name} in {path}')
+            else:
+                raise ControlError(desc=f'mkdir failed for {name} in {path}: {exc}')
+        except Exception as exc:
+            raise ControlError(desc=f'mkdir failed for {name} in {path}: {exc}')
+
+    def _ensure_dir(self, parent_path, subdirs):
+        """Ensure subdirectories exist under parent_path on device.
+
+        Creates the full nested path with a single mkdir call (device
+        uses recursive mkdir). Returns the full directory path.
+        """
+        subdir_path = '/'.join(subdirs)
+        self._mkdir_on_device(subdir_path, parent_path)
+        if parent_path == '/':
+            return '/' + subdir_path
+        return parent_path + '/' + subdir_path
+
     def upload_books(self, files, names, on_card=None, end_session=True, metadata=None):
         host = self.device_host or PREFS['host']
         port = self.device_port or PREFS['port']
@@ -203,6 +270,13 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
             self._log(f'[CrossPoint] chunk_size capped to 2048 (was {chunk_size})')
             chunk_size = 2048
         debug = PREFS['debug']
+
+        # Normalize base upload path
+        base_path = upload_path
+        if not base_path.startswith('/'):
+            base_path = '/' + base_path
+        if base_path != '/' and base_path.endswith('/'):
+            base_path = base_path[:-1]
 
         paths = []
         total = len(files)
@@ -214,15 +288,19 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
             else:
                 filepath = infile
             filename = os.path.basename(name)
-            lpath = upload_path
-            if not lpath.startswith('/'):
-                lpath = '/' + lpath
-            if lpath != '/' and lpath.endswith('/'):
-                lpath = lpath[:-1]
-            if lpath == '/':
+            subdirs = []
+            if metadata and i < len(metadata):
+                subdirs, filename = self._format_upload_path(metadata[i], filename)
+
+            if subdirs:
+                target_dir = self._ensure_dir(base_path, subdirs)
+            else:
+                target_dir = base_path
+
+            if target_dir == '/':
                 lpath = '/' + filename
             else:
-                lpath = lpath + '/' + filename
+                lpath = target_dir + '/' + filename
 
             def _progress(sent, size):
                 if size > 0:
@@ -232,7 +310,7 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
             ws_client.upload_file(
                 host,
                 port,
-                upload_path,
+                target_dir,
                 filename,
                 filepath,
                 chunk_size=chunk_size,
