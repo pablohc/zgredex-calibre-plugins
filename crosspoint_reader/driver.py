@@ -7,7 +7,7 @@ import urllib.request
 from calibre.devices.errors import ControlError
 from calibre.devices.interface import DevicePlugin
 from calibre.devices.usbms.deviceconfig import DeviceConfig
-from calibre.devices.usbms.books import Book
+from calibre.devices.usbms.books import Book, BookList
 from calibre.ebooks.metadata.book.base import Metadata
 
 from . import ws_client
@@ -149,23 +149,36 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
     def save_settings(self, config_widget):
         config_widget.save()
 
-    def books(self, oncard=None, end_session=True):
-        if oncard is not None:
-            return []
-        entries = self._http_get_json('/api/files', params={'path': '/'})
-        books = []
-        fetch_metadata = PREFS['fetch_metadata']
+    def _list_files_recursive(self, path='/'):
+        """Return a flat list of (lpath, size) for all EPUB files on device."""
+        results = []
+        try:
+            entries = self._http_get_json('/api/files', params={'path': path})
+        except Exception as exc:
+            self._log(f'[CrossPoint] listing {path} failed: {exc}')
+            return results
         for entry in entries:
-            if entry.get('isDirectory'):
-                continue
-            if not entry.get('isEpub'):
-                continue
             name = entry.get('name', '')
             if not name:
                 continue
-            size = entry.get('size', 0)
-            lpath = '/' + name if not name.startswith('/') else name
-            title = os.path.splitext(os.path.basename(name))[0]
+            if path == '/':
+                entry_path = '/' + name
+            else:
+                entry_path = path + '/' + name
+            if entry.get('isDirectory'):
+                results.extend(self._list_files_recursive(entry_path))
+            elif entry.get('isEpub'):
+                results.append((entry_path, entry.get('size', 0)))
+        return results
+
+    def books(self, oncard=None, end_session=True):
+        if oncard is not None:
+            return BookList(None, None, None)
+        file_list = self._list_files_recursive('/')
+        bl = BookList(None, None, None)
+        fetch_metadata = PREFS['fetch_metadata']
+        for lpath, size in file_list:
+            title = os.path.splitext(os.path.basename(lpath))[0]
             meta = Metadata(title, [])
             if fetch_metadata:
                 try:
@@ -179,8 +192,8 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
                 except Exception as exc:
                     self._log(f'[CrossPoint] metadata read failed for {lpath}: {exc}')
             book = Book('', lpath, size=size, other=meta)
-            books.append(book)
-        return books
+            bl.add_book(book, replace_metadata=True)
+        return bl
 
     def sync_booklists(self, booklists, end_session=True):
         # No on-device metadata sync supported.
@@ -324,6 +337,8 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
         return paths
 
     def add_books_to_metadata(self, locations, metadata, booklists):
+        self._log(f'[CrossPoint] add_books_to_metadata: {len(locations)} locations, '
+                  f'{len(booklists)} booklists')
         metadata = iter(metadata)
         for location in locations:
             info = next(metadata)
@@ -332,10 +347,10 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
             book = Book('', lpath, size=length, other=info)
             if booklists:
                 booklists[0].add_book(book, replace_metadata=True)
+                self._log(f'[CrossPoint] added to booklist: {lpath}')
+            else:
+                self._log(f'[CrossPoint] WARNING: booklists empty, could not add {lpath}')
 
-    def add_books_to_metadata(self, locations, metadata, booklists):
-        # No on-device catalog to update yet.
-        return
 
     def delete_books(self, paths, end_session=True):
         for path in paths:
@@ -353,62 +368,18 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
                 p = '/' + p
             return p
 
-        def norm_name(p):
-            if not p:
-                return ''
-            name = os.path.basename(p)
-            try:
-                import unicodedata
-                name = unicodedata.normalize('NFKC', name)
-            except Exception:
-                pass
-            name = name.replace('\u2019', "'").replace('\u2018', "'")
-            return name.casefold()
-
-        device_names = set()
-        try:
-            entries = self._http_get_json('/api/files', params={'path': '/'})
-            on_device = set()
-            for entry in entries:
-                if entry.get('isDirectory'):
-                    continue
-                name = entry.get('name', '')
-                if not name:
-                    continue
-                on_device.add(norm(name))
-                on_device.add(norm('/' + name))
-                device_names.add(norm_name(name))
-            self._log(f'[CrossPoint] on-device list: {sorted(on_device)}')
-        except Exception as exc:
-            self._log(f'[CrossPoint] refresh list failed: {exc}')
-            on_device = None
+        deleted = set(norm(p) for p in paths)
+        self._log(f'[CrossPoint] deleted paths: {sorted(deleted)}')
 
         removed = 0
         for bl in booklists:
             for book in tuple(bl):
                 bpath = norm(getattr(book, 'path', ''))
                 blpath = norm(getattr(book, 'lpath', ''))
-                self._log(f'[CrossPoint] book paths: {bpath} | {blpath}')
-                should_remove = False
-                if on_device is not None:
-                    if device_names:
-                        if norm_name(bpath) not in device_names and norm_name(blpath) not in device_names:
-                            should_remove = True
-                    elif bpath and bpath not in on_device and blpath and blpath not in on_device:
-                        should_remove = True
-                else:
-                    for path in paths:
-                        target = norm(path)
-                        target_name = os.path.basename(target)
-                        if target == bpath or target == blpath:
-                            should_remove = True
-                        elif target_name and (os.path.basename(bpath) == target_name or os.path.basename(blpath) == target_name):
-                            should_remove = True
-                if should_remove:
+                if bpath in deleted or blpath in deleted:
                     bl.remove_book(book)
                     removed += 1
-        if removed:
-            self._log(f'[CrossPoint] removed {removed} items from device list')
+        self._log(f'[CrossPoint] removed {removed} items from device list')
 
     def get_file(self, path, outfile, end_session=True, this_book=None, total_books=None):
         url = self._http_base() + '/download'
