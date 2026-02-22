@@ -21,16 +21,7 @@ zip:
 	cd $(PLUGIN_DIR) && zip -r ../$(ZIP_NAME) . -x '*.pyc' '__pycache__/*' '.DS_Store'
 	@echo "Created $(ZIP_NAME)"
 
-BUMP = python3 -c "\
-import re, sys; \
-part = sys.argv[1]; \
-f = '$(PLUGIN_DIR)/driver.py'; \
-txt = open(f).read(); \
-m = re.search(r'version\s*=\s*\((\d+),\s*(\d+),\s*(\d+)\)', txt); \
-M, m_, p = int(m.group(1)), int(m.group(2)), int(m.group(3)); \
-new = {'major': (M+1,0,0), 'minor': (M,m_+1,0), 'patch': (M,m_,p+1)}[part]; \
-open(f,'w').write(txt.replace(m.group(0), f'version = ({new[0]}, {new[1]}, {new[2]})')); \
-print(f'{M}.{m_}.{p} -> {new[0]}.{new[1]}.{new[2]}')"
+BUMP = python3 -c "import re, sys; part = sys.argv[1]; f = '$(PLUGIN_DIR)/driver.py'; txt = open(f).read(); m = re.search(r'version\s*=\s*\((\d+),\s*(\d+),\s*(\d+)\)', txt); M, m_, p = int(m.group(1)), int(m.group(2)), int(m.group(3)); new = {'major': (M+1,0,0), 'minor': (M,m_+1,0), 'patch': (M,m_,p+1)}[part]; open(f,'w').write(txt.replace(m.group(0), f'version = ({new[0]}, {new[1]}, {new[2]})')); print(f'{M}.{m_}.{p} -> {new[0]}.{new[1]}.{new[2]}')"
 
 bump-patch:
 	@$(BUMP) patch
