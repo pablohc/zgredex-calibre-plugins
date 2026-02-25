@@ -30,8 +30,8 @@ PREFS.defaults['chunk_size'] = 2048
 PREFS.defaults['debug'] = False
 PREFS.defaults['fetch_metadata'] = False
 
-# Conversion settings
-PREFS.defaults['enable_conversion'] = True
+# Conversion settings (disabled by default for safe upgrades)
+PREFS.defaults['enable_conversion'] = False
 PREFS.defaults['jpeg_quality'] = 85
 PREFS.defaults['light_novel_mode'] = False
 PREFS.defaults['screen_width'] = 480

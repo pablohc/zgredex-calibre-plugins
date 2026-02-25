@@ -244,6 +244,9 @@ class EpubConverter:
                     )
                     
                     # Update split image references in OPF
+                    # Calculate OPF directory for relative paths
+                    opf_dir = os.path.dirname(opf_path) if '/' in opf_path else ''
+                    
                     for orig_name, parts in split_images.items():
                         orig_base = re.sub(r'\.[^.]+$', '', orig_name)
                         
@@ -258,10 +261,19 @@ class EpubConverter:
                         manifest_additions = ''
                         for j in range(1, len(parts)):
                             p = parts[j]
-                            manifest_additions += f'<item id="img-{p["id"]}" href="{p["imgName"]}" media-type="image/jpeg"/>\n'
+                            # Calculate href relative to OPF directory
+                            part_full_path = p['path']
+                            if opf_dir and part_full_path.startswith(opf_dir + '/'):
+                                href = part_full_path[len(opf_dir) + 1:]
+                            elif opf_dir:
+                                # Image is in different directory, use relative path
+                                href = os.path.relpath(part_full_path, opf_dir).replace('\\', '/')
+                            else:
+                                href = part_full_path
+                            manifest_additions += f'<item id="img-{p["id"]}" href="{href}" media-type="image/jpeg"/>\n'
                         
                         if manifest_additions:
-                            t = t.replace('</manifest>', manifest_additions + '</manifest>')
+                            t = t.replace('</manifest>', manifest_additions + '</manifest>', 1)
                     
                     # Ensure cover meta
                     fixed_cover = self._ensure_cover_meta(t)
@@ -484,10 +496,11 @@ class EpubConverter:
                 return {'content': content, 'fixed': True}
             return {'content': content, 'fixed': False}
         
-        # Add missing cover meta
+        # Add missing cover meta (only replace first occurrence)
         content = content.replace(
             '</metadata>',
-            f'    <meta name="cover" content="{cover_id}"/>\n  </metadata>'
+            f'    <meta name="cover" content="{cover_id}"/>\n  </metadata>',
+            1
         )
         return {'content': content, 'fixed': True}
     
