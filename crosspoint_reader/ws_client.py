@@ -156,28 +156,17 @@ class WebSocketClient:
     def drain_messages(self):
         """Drain all pending messages from the socket.
 
-        Uses different approaches per platform since select.select()
-        doesn't work with sockets on Windows.
+        On Windows, skip draining to avoid socket timeout interference.
+        On Unix/Linux/Mac, use select.select() which works correctly.
         """
         if self.sock is None:
             return []
         messages = []
 
         if sys.platform == 'win32':
-            # Windows: select.select() doesn't work with sockets
-            # Use short timeout instead
-            self.sock.settimeout(0.01)
-            while True:
-                try:
-                    opcode, payload = self._read_frame()
-                    if opcode == 0x1:
-                        messages.append(payload.decode('utf-8', 'ignore'))
-                    elif opcode == 0x8:
-                        raise WebSocketError('Connection closed')
-                except socket.timeout:
-                    break
-                except WebSocketError:
-                    raise
+            # Windows: Skip draining to avoid interfering with socket timeout
+            # select.select() doesn't work with sockets on Windows
+            return []
         else:
             # Unix/Linux/Mac: select.select() works fine with sockets
             while True:
@@ -278,7 +267,7 @@ def discover_device(timeout=2.0, debug=False, logger=None, extra_hosts=None):
 
 def upload_file(host, port, upload_path, filename, filepath, chunk_size=16384, debug=False, progress_cb=None,
                 logger=None):
-    client = WebSocketClient(host, port, timeout=10, debug=debug, logger=logger)
+    client = WebSocketClient(host, port, timeout=60, debug=debug, logger=logger)
     try:
         client.connect()
         size = os.path.getsize(filepath)
