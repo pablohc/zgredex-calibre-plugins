@@ -9,7 +9,7 @@ from calibre.devices.interface import DevicePlugin
 from calibre.devices.usbms.deviceconfig import DeviceConfig
 from calibre.devices.usbms.books import Book, BookList
 from calibre.ebooks.metadata.book.base import Metadata
-from calibre.ptempfile import PersistentTemporaryFile, TemporaryDirectory
+from calibre.ptempfile import PersistentTemporaryFile
 
 from . import ws_client
 from .config import CrossPointConfigWidget, PREFS
@@ -23,7 +23,7 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
     description = 'CrossPoint Reader wireless device with EPUB image conversion'
     supported_platforms = ['windows', 'osx', 'linux']
     author = 'CrossPoint Reader'
-    version = (0, 2, 1)
+    version = (0, 2, 2)
 
     # Invalid USB vendor info to avoid USB scans matching.
     VENDOR_ID = [0xFFFF]
@@ -284,6 +284,7 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
         if not PREFS['enable_conversion']:
             return input_path
         
+        temp_path = None
         try:
             # Create converter with settings from preferences
             converter = EpubConverter(
@@ -308,6 +309,12 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
             
         except Exception as exc:
             self._log(f'[CrossPoint] Conversion failed: {exc}')
+            # Clean up temp file on failure
+            if temp_path:
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
             # Return original file if conversion fails
             return input_path
 
@@ -320,6 +327,10 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
             self._log(f'[CrossPoint] chunk_size capped to 2048 (was {chunk_size})')
             chunk_size = 2048
         debug = PREFS['debug']
+
+        # Validate input lengths
+        if len(files) != len(names):
+            raise ControlError(desc=f'Mismatch: {len(files)} files but {len(names)} names')
 
         # Normalize base upload path
         base_path = upload_path
@@ -362,7 +373,8 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
                 else:
                     lpath = target_dir + '/' + filename
 
-                def _progress(sent, size):
+                # Bind loop variables via default arguments to avoid closure bug
+                def _progress(sent, size, i=i, total=total):
                     if size > 0:
                         self.report_progress((i + sent / float(size)) / float(total),
                                              'Transferring books to device...')
