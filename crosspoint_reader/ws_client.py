@@ -3,6 +3,7 @@ import os
 import select
 import socket
 import struct
+import sys
 import time
 
 
@@ -153,18 +154,42 @@ class WebSocketClient:
         return data
 
     def drain_messages(self):
+        """Drain all pending messages from the socket.
+
+        Uses different approaches per platform since select.select()
+        doesn't work with sockets on Windows.
+        """
         if self.sock is None:
             return []
         messages = []
-        while True:
-            r, _, _ = select.select([self.sock], [], [], 0)
-            if not r:
-                break
-            opcode, payload = self._read_frame()
-            if opcode == 0x1:
-                messages.append(payload.decode('utf-8', 'ignore'))
-            elif opcode == 0x8:
-                raise WebSocketError('Connection closed')
+
+        if sys.platform == 'win32':
+            # Windows: select.select() doesn't work with sockets
+            # Use short timeout instead
+            self.sock.settimeout(0.01)
+            while True:
+                try:
+                    opcode, payload = self._read_frame()
+                    if opcode == 0x1:
+                        messages.append(payload.decode('utf-8', 'ignore'))
+                    elif opcode == 0x8:
+                        raise WebSocketError('Connection closed')
+                except socket.timeout:
+                    break
+                except WebSocketError:
+                    raise
+        else:
+            # Unix/Linux/Mac: select.select() works fine with sockets
+            while True:
+                r, _, _ = select.select([self.sock], [], [], 0)
+                if not r:
+                    break
+                opcode, payload = self._read_frame()
+                if opcode == 0x1:
+                    messages.append(payload.decode('utf-8', 'ignore'))
+                elif opcode == 0x8:
+                    raise WebSocketError('Connection closed')
+
         return messages
 
 
