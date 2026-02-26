@@ -343,13 +343,18 @@ class EpubConverter:
     def _process_image(self, data, name):
         """
         Process a single image.
-        
+
         Returns tuple: (list of {'data': bytes, 'suffix': str}, bool success)
         If success is False, the original data is returned unchanged.
         """
         try:
             img = Image.open(io.BytesIO(data))
-            
+
+            # Log image info
+            orig_w, orig_h = img.size
+            mode = img.mode
+            self._log(f"  Image: {name} - {orig_w}x{orig_h} {mode}")
+
             # Convert to RGB if necessary
             if img.mode in ('RGBA', 'LA', 'P'):
                 background = Image.new('RGB', img.size, (255, 255, 255))
@@ -358,23 +363,32 @@ class EpubConverter:
                 if img.mode in ('RGBA', 'LA'):
                     background.paste(img, mask=img.split()[-1])
                     img = background
+                self._log(f"    Converted {mode} -> RGB")
             elif img.mode != 'RGB':
                 img = img.convert('RGB')
-            
-            orig_w, orig_h = img.size
-            
+                self._log(f"    Converted {mode} -> RGB")
+
             # Check if horizontal and exceeds screen
             is_horizontal = orig_w > orig_h
             exceeds_screen = orig_w > self.max_width or orig_h > self.max_height
             needs_rotation = is_horizontal and exceeds_screen
-            
+
             if needs_rotation and self.enable_split_rotate:
+                self._log(f"    Light Novel Mode: rotate & split (horizontal: {is_horizontal})")
                 return self._process_split_rotate(img, orig_w, orig_h), True
             else:
+                # Scale if needed
+                if exceeds_screen:
+                    scale = min(self.max_width / orig_w, self.max_height / orig_h)
+                    new_w = int(orig_w * scale)
+                    new_h = int(orig_h * scale)
+                    self._log(f"    Scaling: {orig_w}x{orig_h} -> {new_w}x{new_h}")
+                else:
+                    self._log(f"    No scaling needed")
                 return self._process_normal(img, orig_w, orig_h), True
-            
+
         except Exception as e:
-            self._log(f"Error processing {name}: {e}")
+            self._log(f"  ERROR processing {name}: {e}")
             # Return original data as fallback with success=False
             return [{'data': data, 'suffix': ''}], False
     

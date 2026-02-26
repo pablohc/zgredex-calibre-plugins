@@ -14,7 +14,7 @@ from calibre.ptempfile import PersistentTemporaryFile
 from . import ws_client
 from .config import CrossPointConfigWidget, PREFS
 from .converter import EpubConverter
-from .log import add_log
+from .log import add_log, add_error, add_warning, add_info, add_debug
 
 
 class CrossPointDevice(DeviceConfig, DevicePlugin):
@@ -23,7 +23,7 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
     description = 'CrossPoint Reader wireless device with EPUB image conversion'
     supported_platforms = ['windows', 'osx', 'linux']
     author = 'CrossPoint Reader'
-    version = (0, 2, 4)
+    version = (0, 2, 5)
 
     # Invalid USB vendor info to avoid USB scans matching.
     VENDOR_ID = [0xFFFF]
@@ -50,7 +50,8 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
         self.report_progress = lambda x, y: x
         self._debug_enabled = False
 
-    def _log(self, message):
+    def _log(self, message, level='info'):
+        """Log a message with optional level filtering."""
         add_log(message)
         if self._debug_enabled:
             try:
@@ -105,6 +106,19 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
             'device_name': 'CrossPoint Reader',
             'device_version': '1',
         }
+
+        # Try to get firmware version from /api/status endpoint
+        try:
+            status = self._http_get_json('/api/status', timeout=3)
+            if status and 'version' in status:
+                firmware_version = status['version']
+                device_info['firmware_version'] = firmware_version
+                self._log(f'[CrossPoint] Device firmware version: {firmware_version}')
+            if status and 'mode' in status:
+                self._log(f'[CrossPoint] Device WiFi mode: {status["mode"]}')
+        except Exception as exc:
+            self._log(f'[CrossPoint] Could not get device status: {exc}')
+
         return (self.gui_name, '1', '1', '', {'main': device_info})
 
     def reset(self, key='-1', log_packets=False, report_progress=None, detected_device=None):
@@ -156,6 +170,7 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
         results = []
         try:
             entries = self._http_get_json('/api/files', params={'path': path})
+            self._log(f'[CrossPoint] _list_files_recursive: {path} got {len(entries)} entries')
         except Exception as exc:
             self._log(f'[CrossPoint] listing {path} failed: {exc}')
             return results
@@ -167,23 +182,33 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
                 entry_path = '/' + name
             else:
                 entry_path = path + '/' + name
+
+            # Log entry for debug
+            self._log(f'[CrossPoint] entry: {entry_path} dir={entry.get("isDirectory")} epub={entry.get("isEpub")}')
+
             if entry.get('isDirectory'):
                 results.extend(self._list_files_recursive(entry_path))
-            elif entry.get('isEpub'):
+            # Check both isEpub flag and file extension
+            elif entry.get('isEpub') or name.lower().endswith('.epub'):
                 results.append((entry_path, entry.get('size', 0)))
         return results
 
     def books(self, oncard=None, end_session=True):
         if oncard is not None:
             return BookList(None, None, None)
+
+        self._log('[CrossPoint] books: listing files from device...')
         file_list = self._list_files_recursive('/')
+        self._log(f'[CrossPoint] books: found {len(file_list)} EPUB file(s)')
+
         bl = BookList(None, None, None)
         fetch_metadata = PREFS['fetch_metadata']
-        for lpath, size in file_list:
+        for i, (lpath, size) in enumerate(file_list):
             title = os.path.splitext(os.path.basename(lpath))[0]
             meta = Metadata(title, [])
             if fetch_metadata:
                 try:
+                    self._log(f'[CrossPoint] [{i+1}/{len(file_list)}] Fetching metadata for {lpath}...')
                     from calibre.customize.ui import quick_metadata
                     from calibre.ebooks.metadata.meta import get_metadata
                     with self._download_temp(lpath) as tf:
@@ -191,10 +216,13 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
                             m = get_metadata(tf, stream_type='epub', force_read_metadata=True)
                         if m is not None:
                             meta = m
+                            self._log(f'[CrossPoint] [{i+1}/{len(file_list)}] Metadata: {m.title}')
                 except Exception as exc:
                     self._log(f'[CrossPoint] metadata read failed for {lpath}: {exc}')
             book = Book('', lpath, size=size, other=meta)
             bl.add_book(book, replace_metadata=True)
+
+        self._log(f'[CrossPoint] books: returning {len(bl)} book(s)')
         return bl
 
     def sync_booklists(self, booklists, end_session=True):
@@ -342,22 +370,26 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
         paths = []
         total = len(files)
         temp_files = []  # Track temp files for cleanup
-        
+
+        self._log(f'[CrossPoint] upload_books: {total} file(s) to {host}:{port}{base_path}')
+
         try:
             for i, (infile, name) in enumerate(zip(files, names)):
+                self._log(f'[CrossPoint] [{i+1}/{total}] Processing: {name}')
                 if hasattr(infile, 'read'):
                     filepath = getattr(infile, 'name', None)
                     if not filepath:
                         raise ControlError(desc='In-memory uploads are not supported')
                 else:
                     filepath = infile
-                
+
                 # Convert EPUB if enabled
                 converted_path = self._convert_epub(filepath)
                 if converted_path != filepath:
                     temp_files.append(converted_path)
                     filepath = converted_path
-                
+                    self._log(f'[CrossPoint] [{i+1}/{total}] Using converted file')
+
                 filename = os.path.basename(name)
                 subdirs = []
                 if metadata and i < len(metadata):
@@ -365,6 +397,7 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
 
                 if subdirs:
                     target_dir = self._ensure_dir(base_path, subdirs)
+                    self._log(f'[CrossPoint] [{i+1}/{total}] Target dir: {target_dir}')
                 else:
                     target_dir = base_path
 
@@ -379,21 +412,28 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
                         self.report_progress((i + sent / float(size)) / float(total),
                                              'Transferring books to device...')
 
-                ws_client.upload_file(
-                    host,
-                    port,
-                    target_dir,
-                    filename,
-                    filepath,
-                    chunk_size=chunk_size,
-                    debug=debug,
-                    progress_cb=_progress,
-                    logger=self._log,
-                )
+                try:
+                    ws_client.upload_file(
+                        host,
+                        port,
+                        target_dir,
+                        filename,
+                        filepath,
+                        chunk_size=chunk_size,
+                        debug=debug,
+                        progress_cb=_progress,
+                        logger=self._log,
+                    )
+                    self._log(f'[CrossPoint] [{i+1}/{total}] Upload complete: {lpath}')
+                except Exception as exc:
+                    self._log(f'[CrossPoint] [{i+1}/{total}] Upload failed: {exc}')
+                    raise
+
                 paths.append((lpath, os.path.getsize(filepath)))
 
             self.report_progress(1.0, 'Transferring books to device...')
-            
+            self._log(f'[CrossPoint] All uploads complete: {len(paths)} file(s)')
+
         finally:
             # Clean up temp files
             for temp_path in temp_files:
@@ -401,7 +441,7 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
                     os.remove(temp_path)
                 except Exception as cleanup_err:
                     self._log(f'[CrossPoint] Failed to clean up temp file {temp_path}: {cleanup_err}')
-        
+
         return paths
 
     def add_books_to_metadata(self, locations, metadata, booklists):
@@ -420,30 +460,72 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
                 self._log(f'[CrossPoint] WARNING: booklists empty, could not add {lpath}')
 
 
+    def _normalize_path(self, path):
+        """Normalize path to use forward slashes and leading slash."""
+        if not path:
+            return ''
+        p = path.replace('\\', '/')
+        if not p.startswith('/'):
+            p = '/' + p
+        return p
+
     def delete_books(self, paths, end_session=True):
-        for path in paths:
-            status, body = self._http_post_form('/delete', {'path': path, 'type': 'file'})
-            if status != 200:
-                raise ControlError(desc=f'Delete failed for {path}: {body}')
-            self._log(f'[CrossPoint] deleted {path}')
+        """Delete books from device via WebDAV DELETE method."""
+        host = self.device_host or PREFS['host']
+        debug = PREFS['debug']
+
+        # Normalize paths to use forward slashes (device expects Unix-style paths)
+        normalized_paths = [self._normalize_path(p) for p in paths]
+
+        self._log(f'[CrossPoint] delete_books: {len(normalized_paths)} file(s)')
+        self._log(f'[CrossPoint] Host: {host}, Paths: {normalized_paths}')
+
+        # Use WebDAV DELETE method (one file per request)
+        from urllib.parse import quote
+
+        deleted_paths = []
+        failed_paths = []
+
+        for path in normalized_paths:
+            try:
+                # URL encode the path
+                encoded_path = quote(path)
+                url = self._http_base() + encoded_path
+
+                self._log(f'[CrossPoint] DELETE {url}')
+
+                req = urllib.request.Request(url, method='DELETE')
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    if resp.status == 200 or resp.status == 204:
+                        self._log(f'[CrossPoint] Deleted: {path}')
+                        deleted_paths.append(path)
+                    else:
+                        self._log(f'[CrossPoint] WARNING: Delete failed for {path}: HTTP {resp.status}')
+                        failed_paths.append(path)
+
+            except urllib.error.HTTPError as exc:
+                self._log(f'[CrossPoint] WARNING: Delete HTTP error for {path}: {exc.code}')
+                failed_paths.append(path)
+            except Exception as exc:
+                self._log(f'[CrossPoint] WARNING: Delete failed for {path}: {exc}')
+                failed_paths.append(path)
+
+        if failed_paths:
+            self._log(f'[CrossPoint] WARNING: {len(failed_paths)} file(s) failed to delete')
+        else:
+            self._log(f'[CrossPoint] All {len(deleted_paths)} file(s) deleted successfully')
+
+        return deleted_paths
 
     def remove_books_from_metadata(self, paths, booklists):
-        def norm(p):
-            if not p:
-                return ''
-            p = p.replace('\\', '/')
-            if not p.startswith('/'):
-                p = '/' + p
-            return p
-
-        deleted = set(norm(p) for p in paths)
+        deleted = set(self._normalize_path(p) for p in paths)
         self._log(f'[CrossPoint] deleted paths: {sorted(deleted)}')
 
         removed = 0
         for bl in booklists:
             for book in tuple(bl):
-                bpath = norm(getattr(book, 'path', ''))
-                blpath = norm(getattr(book, 'lpath', ''))
+                bpath = self._normalize_path(getattr(book, 'path', ''))
+                blpath = self._normalize_path(getattr(book, 'lpath', ''))
                 if bpath in deleted or blpath in deleted:
                     bl.remove_book(book)
                     removed += 1
