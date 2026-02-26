@@ -17,7 +17,7 @@ from qt.core import (
     Qt,
 )
 
-from .log import get_log_text
+from .log import get_log_text, get_log_file_path
 
 
 PREFS = JSONConfig('plugins/crosspoint_reader')
@@ -236,7 +236,11 @@ class CrossPointConfigWidget(QWidget):
         PREFS['split_overlap'] = int(self.split_overlap.value())
 
     def _refresh_logs(self):
-        self.log_view.setPlainText(get_log_text())
+        log_text = get_log_text()
+        log_file = get_log_file_path()
+        if log_file:
+            log_text = f'Log file: {log_file}\n\n' + log_text
+        self.log_view.setPlainText(log_text)
 
     def validate(self):
         return True

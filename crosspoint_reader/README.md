@@ -86,11 +86,28 @@ Automatically converts EPUB images before uploading for maximum e-reader compati
 ### Split images not aligned
 - Adjust Split Overlap percentage (try 15-20%)
 
+### Viewing logs
+Logs are stored in two locations:
+1. **In-plugin log**: Viewable in the plugin configuration (Debug Log section)
+2. **Persistent log file**: `calibre/logs/crosspoint_reader.log` in your Calibre config directory
+   - Windows: `%APPDATA%\calibre\logs\crosspoint_reader.log`
+   - Linux: `~/.config/calibre/logs/crosspoint_reader.log`
+   - macOS: `~/Library/Preferences/calibre/logs/crosspoint_reader.log`
+
 ## License
 
 This plugin is provided as-is for use with CrossPoint Reader devices.
 
 ## Changelog
+
+### v0.2.5
+- Fixed: Deleting books from Calibre now works correctly
+- Improved logging with persistent log file in Calibre config directory
+
+### v0.2.4
+- Fixed: SVG images and covers now display correctly on e-readers
+- Increased upload timeout for large files
+- Improved error handling for connection failures
 
 ### v0.2.3
 - Fixed: Basename collision when EPUBs have duplicate filenames in different folders (e.g., `Images/cover.png` and `assets/cover.png`) - now uses full path as key

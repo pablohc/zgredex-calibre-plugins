@@ -29,7 +29,14 @@ class WebSocketClient:
                 print(msg)
 
     def connect(self):
-        self.sock = socket.create_connection((self.host, self.port), self.timeout)
+        self._log(f'Connecting to {self.host}:{self.port}...')
+        try:
+            self.sock = socket.create_connection((self.host, self.port), self.timeout)
+            self._log(f'Socket connected: {self.sock.getsockname()} -> {self.sock.getpeername()}')
+        except Exception as exc:
+            self._log(f'Connection failed: {exc}')
+            raise WebSocketError(f'Connection failed to {self.host}:{self.port}: {exc}') from exc
+
         key = base64.b64encode(os.urandom(16)).decode('ascii')
         req = (
             'GET / HTTP/1.1\r\n'
@@ -41,9 +48,13 @@ class WebSocketClient:
             '\r\n'
         )
         self.sock.sendall(req.encode('ascii'))
+        self._log(f'Handshake request sent (key: {key[:8]}...)')
+
         data = self._read_http_response()
         if b' 101 ' not in data.split(b'\r\n', 1)[0]:
-            raise WebSocketError('Handshake failed: ' + data.split(b'\r\n', 1)[0].decode('ascii', 'ignore'))
+            error_msg = data.split(b'\r\n', 1)[0].decode('ascii', 'ignore')
+            self._log(f'Handshake failed: {error_msg}')
+            raise WebSocketError('Handshake failed: ' + error_msg)
         self._log('Handshake OK')
 
     def _read_http_response(self):
@@ -236,7 +247,10 @@ def discover_device(timeout=2.0, debug=False, logger=None, extra_hosts=None):
             for port in ports:
                 targets.append((bcast, port))
 
-    for _ in range(3):
+    _log(logger, debug, f'[CrossPoint WS] probing {len(targets)} target(s)')
+
+    for attempt in range(3):
+        _log(logger, debug, f'[CrossPoint WS] discovery attempt {attempt + 1}/3')
         for host, port in targets:
             try:
                 sock.sendto(msg, (host, port))
@@ -249,7 +263,7 @@ def discover_device(timeout=2.0, debug=False, logger=None, extra_hosts=None):
                 data, addr = sock.recvfrom(256)
             except Exception:
                 break
-            _log(logger, debug, f'[CrossPoint WS] discovery {addr} {data}')
+            _log(logger, debug, f'[CrossPoint WS] discovery response from {addr}: {data}')
             try:
                 text = data.decode('utf-8', 'ignore')
             except Exception:
@@ -261,7 +275,10 @@ def discover_device(timeout=2.0, debug=False, logger=None, extra_hosts=None):
                     port = int(text[semi + 1:].strip().split(',')[0])
                 except Exception:
                     port = 81
+            _log(logger, debug, f'[CrossPoint WS] discovered device at {addr[0]}:{port}')
             return addr[0], port
+
+    _log(logger, debug, '[CrossPoint WS] no device found')
     return None, None
 
 
@@ -271,6 +288,8 @@ def upload_file(host, port, upload_path, filename, filepath, chunk_size=16384, d
     try:
         client.connect()
         size = os.path.getsize(filepath)
+        size_mb = size / (1024 * 1024)
+        client._log(f'Uploading: {filename} ({size_mb:.2f} MB) to {upload_path}')
         start = f'START:{filename}:{size}:{upload_path}'
         client._log('Sending START', start)
         client.send_text(start)
@@ -284,7 +303,9 @@ def upload_file(host, port, upload_path, filename, filepath, chunk_size=16384, d
         if msg != 'READY':
             raise WebSocketError('Unexpected response: ' + msg)
 
+        client._log(f'Starting binary transfer (chunk_size: {chunk_size})')
         sent = 0
+        last_log = 0
         with open(filepath, 'rb') as f:
             while True:
                 chunk = f.read(chunk_size)
@@ -294,15 +315,110 @@ def upload_file(host, port, upload_path, filename, filepath, chunk_size=16384, d
                 sent += len(chunk)
                 if progress_cb:
                     progress_cb(sent, size)
+                # Log progress every 25%
+                if size > 0:
+                    pct = (sent / size) * 100
+                    if pct - last_log >= 25:
+                        client._log(f'Progress: {pct:.0f}% ({sent / (1024 * 1024):.2f} MB)')
+                        last_log = pct
                 client.drain_messages()
 
         # Wait for DONE or ERROR
+        client._log('Transfer complete, waiting for confirmation...')
         while True:
             msg = client.read_text()
             client._log('Received', msg)
             if msg == 'DONE':
+                client._log(f'Upload complete: {filename}')
                 return
             if msg.startswith('ERROR'):
                 raise WebSocketError(msg)
+    except Exception as exc:
+        client._log(f'Upload failed: {exc}')
+        raise
     finally:
         client.close()
+
+
+def delete_file(host, port, filepath, debug=False, logger=None):
+    """Delete a file from the device via WebSocket.
+
+    Args:
+        host: Device host address
+        port: WebSocket port
+        filepath: Path to file on device (e.g., '/book.epub')
+        debug: Enable debug logging
+        logger: Logger function
+
+    Raises:
+        WebSocketError: If deletion fails
+    """
+    client = WebSocketClient(host, port, timeout=30, debug=debug, logger=logger)
+    try:
+        client.connect()
+        cmd = f'DELETE:{filepath}'
+        client._log('Sending DELETE', cmd)
+        client.send_text(cmd)
+
+        msg = client.read_text()
+        client._log('Received', msg)
+        if not msg:
+            raise WebSocketError('Unexpected response: <empty>')
+        if msg.startswith('ERROR'):
+            raise WebSocketError(msg)
+        if msg != 'OK':
+            raise WebSocketError(f'Unexpected response: {msg}')
+    finally:
+        client.close()
+
+
+def delete_files(host, port, filepaths, debug=False, logger=None):
+    """Delete multiple files from the device via WebSocket using a single connection.
+
+    Args:
+        host: Device host address
+        port: WebSocket port
+        filepaths: List of paths to delete
+        debug: Enable debug logging
+        logger: Logger function
+
+    Returns:
+        Dict with {'success': [], 'failed': [(path, error), ...]}
+    """
+    result = {'success': [], 'failed': []}
+    client = WebSocketClient(host, port, timeout=30, debug=debug, logger=logger)
+    try:
+        client.connect()
+        client._log(f'Deleting {len(filepaths)} file(s)...')
+        for i, filepath in enumerate(filepaths):
+            try:
+                cmd = f'DELETE:{filepath}'
+                client._log(f'[{i+1}/{len(filepaths)}] Sending DELETE: {filepath}')
+                client.send_text(cmd)
+
+                msg = client.read_text()
+                client._log(f'Received: {msg}')
+                if not msg:
+                    result['failed'].append((filepath, 'empty response'))
+                    client._log(f'Failed: {filepath} - empty response')
+                    continue
+                if msg.startswith('ERROR'):
+                    result['failed'].append((filepath, msg))
+                    client._log(f'Failed: {filepath} - {msg}')
+                    continue
+                if msg == 'OK':
+                    result['success'].append(filepath)
+                    client._log(f'Deleted: {filepath}')
+                else:
+                    result['failed'].append((filepath, f'Unexpected: {msg}'))
+                    client._log(f'Failed: {filepath} - unexpected response: {msg}')
+            except Exception as exc:
+                result['failed'].append((filepath, str(exc)))
+                client._log(f'Exception deleting {filepath}: {exc}')
+    except Exception as exc:
+        client._log(f'Delete connection failed: {exc}')
+        raise
+    finally:
+        client.close()
+    client._log(f'Delete complete: {len(result["success"])} success, {len(result["failed"])} failed')
+    return result
