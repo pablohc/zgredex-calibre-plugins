@@ -1,6 +1,7 @@
 from calibre.utils.config import JSONConfig
 from qt.core import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -37,6 +38,7 @@ PREFS.defaults['light_novel_mode'] = False
 PREFS.defaults['screen_width'] = 480
 PREFS.defaults['screen_height'] = 800
 PREFS.defaults['split_overlap'] = 15  # percentage
+PREFS.defaults['grayscale_mode'] = 'color'  # 'color', 'pseudo_grayscale', 'true_grayscale'
 
 
 class CrossPointConfigWidget(QWidget):
@@ -166,7 +168,28 @@ class CrossPointConfigWidget(QWidget):
         overlap_layout.addWidget(self.split_overlap)
         overlap_layout.addStretch()
         conv_layout.addRow('Split Overlap', overlap_widget)
-        
+
+        # Grayscale mode selector
+        self.grayscale_mode = QComboBox()
+        self.grayscale_mode.addItem('Color (no conversion)', 'color')
+        self.grayscale_mode.addItem('Pseudo-Grayscale (RGB->grayscale)', 'pseudo_grayscale')
+        self.grayscale_mode.addItem('True-Grayscale (1-component JPEG)', 'true_grayscale')
+        self.grayscale_mode.setCurrentIndex(0)  # Default to 'color'
+
+        # Set current value from PREFS
+        current_mode = PREFS.get('grayscale_mode', 'color')
+        for i in range(self.grayscale_mode.count()):
+            if self.grayscale_mode.itemData(i) == current_mode:
+                self.grayscale_mode.setCurrentIndex(i)
+                break
+
+        self.grayscale_mode.setToolTip(
+            "Color: Keep original colors\n"
+            "Pseudo-Grayscale: Convert to RGB with R=G=B (standard JPEG)\n"
+            "True-Grayscale: Convert to 1-component JPEG (smaller file, no chroma)"
+        )
+        conv_layout.addRow('Grayscale Mode', self.grayscale_mode)
+
         conv_group.setLayout(conv_layout)
         layout.addWidget(conv_group)
         
@@ -209,6 +232,7 @@ class CrossPointConfigWidget(QWidget):
         self.light_novel_mode.setEnabled(enabled)
         self.screen_width.setEnabled(enabled)
         self.screen_height.setEnabled(enabled)
+        self.grayscale_mode.setEnabled(enabled)
         # split_overlap depends on both conversion enabled AND light_novel_mode
         self._update_split_overlap_enabled(self.light_novel_mode.isChecked())
     
@@ -234,6 +258,7 @@ class CrossPointConfigWidget(QWidget):
         PREFS['screen_width'] = int(self.screen_width.value())
         PREFS['screen_height'] = int(self.screen_height.value())
         PREFS['split_overlap'] = int(self.split_overlap.value())
+        PREFS['grayscale_mode'] = self.grayscale_mode.currentData()
 
     def _refresh_logs(self):
         log_text = get_log_text()

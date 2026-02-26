@@ -321,6 +321,7 @@ class CrossPointDevice(DeviceConfig, DevicePlugin):
                 max_height=PREFS['screen_height'],
                 enable_split_rotate=PREFS['light_novel_mode'],
                 overlap=PREFS['split_overlap'] / 100.0,
+                grayscale_mode=PREFS.get('grayscale_mode', 'color'),
                 logger=self._log,
             )
             

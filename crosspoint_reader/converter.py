@@ -25,22 +25,24 @@ from PIL import Image
 class EpubConverter:
     """Convert EPUB images to baseline JPEG format."""
     
-    def __init__(self, 
+    def __init__(self,
                  jpeg_quality=85,
                  max_width=480,
                  max_height=800,
                  enable_split_rotate=False,
                  overlap=0.15,
+                 grayscale_mode='color',
                  logger=None):
         """
         Initialize converter.
-        
+
         Args:
             jpeg_quality: JPEG quality 1-95 (default 85)
             max_width: Maximum image width in pixels (default 480)
             max_height: Maximum image height in pixels (default 800)
             enable_split_rotate: Enable Light Novel Mode (default False)
             overlap: Overlap percentage for split images (default 0.15)
+            grayscale_mode: Grayscale mode - 'color', 'pseudo_grayscale', or 'true_grayscale' (default 'color')
             logger: Optional logging function
         """
         self.jpeg_quality = max(1, min(95, jpeg_quality))
@@ -48,6 +50,7 @@ class EpubConverter:
         self.max_height = max_height
         self.enable_split_rotate = enable_split_rotate
         self.overlap = overlap
+        self.grayscale_mode = grayscale_mode
         self._log = logger or (lambda x: None)
         
         # Statistics
@@ -93,6 +96,7 @@ class EpubConverter:
         self._log(f"Converting: {os.path.basename(input_path)}")
         self._log(f"Quality: {self.jpeg_quality}%")
         self._log(f"Light Novel Mode: {'ON' if self.enable_split_rotate else 'OFF'}")
+        self._log(f"Grayscale Mode: {self.grayscale_mode}")
         
         with zipfile.ZipFile(input_path, 'r') as zin:
             # Build rename map for non-JPEG images
@@ -391,18 +395,46 @@ class EpubConverter:
             self._log(f"  ERROR processing {name}: {e}")
             # Return original data as fallback with success=False
             return [{'data': data, 'suffix': ''}], False
-    
+
+    def _apply_grayscale_mode(self, img):
+        """Apply the selected grayscale mode to an image.
+
+        Args:
+            img: PIL Image object
+
+        Returns:
+            PIL Image object with grayscale applied according to grayscale_mode
+        """
+        if self.grayscale_mode == 'color':
+            # No conversion needed
+            return img
+        elif self.grayscale_mode == 'pseudo_grayscale':
+            # Convert to grayscale, then back to RGB (R=G=B)
+            # This creates a grayscale visual but saves as standard JPEG color
+            gray = img.convert('L')
+            return gray.convert('RGB')
+        elif self.grayscale_mode == 'true_grayscale':
+            # Convert to true grayscale (single component)
+            # Pillow will save this as 1-component JPEG
+            return img.convert('L')
+        else:
+            # Default to color for unknown modes
+            return img
+
     def _process_normal(self, img, orig_w, orig_h):
         """Process image without rotation/split."""
         fits_in_screen = orig_w <= self.max_width and orig_h <= self.max_height
-        
+
         if not fits_in_screen:
             # Scale to fit
             scale = min(self.max_width / orig_w, self.max_height / orig_h)
             new_w = int(orig_w * scale)
             new_h = int(orig_h * scale)
             img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        
+
+        # Apply grayscale mode if configured
+        img = self._apply_grayscale_mode(img)
+
         # Save as baseline JPEG
         buf = io.BytesIO()
         img.save(buf, 'JPEG', quality=self.jpeg_quality, progressive=False)
@@ -414,13 +446,16 @@ class EpubConverter:
         scale = self.max_height / orig_w
         scaled_w = self.max_height
         scaled_h = int(orig_h * scale)
-        
+
         img = img.resize((scaled_w, scaled_h), Image.Resampling.LANCZOS)
-        
+
         # Step 2: Rotate 90° clockwise
         img = img.transpose(Image.Transpose.ROTATE_270)
         rot_w, rot_h = img.size
-        
+
+        # Apply grayscale mode after rotation
+        img = self._apply_grayscale_mode(img)
+
         # Step 3: Split if needed
         if rot_w <= self.max_width:
             # No split needed
@@ -436,22 +471,22 @@ class EpubConverter:
             overlap_px = int(max_w * self.overlap)
             step = max_w - overlap_px
             num_parts = (rot_w - overlap_px + step - 1) // step  # ceil division
-            
+
             for i in range(num_parts):
                 # Start from right side (rot_w) and go left
                 x = rot_w - max_w - (i * step)
                 if i == num_parts - 1:
                     x = 0  # Last part starts at left edge
                 x = max(0, x)
-                
+
                 part_w = min(max_w, rot_w - x)
-                
+
                 part_img = img.crop((x, 0, x + part_w, rot_h))
-                
+
                 buf = io.BytesIO()
                 part_img.save(buf, 'JPEG', quality=self.jpeg_quality, progressive=False)
                 parts.append({'data': buf.getvalue(), 'suffix': f'_part{i + 1}'})
-            
+
             return parts
     
     def _fix_svg_cover(self, content):
