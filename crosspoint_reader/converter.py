@@ -505,56 +505,76 @@ class EpubConverter:
         return {'content': result, 'fixed': fixed_count > 0}
     
     def _ensure_cover_meta(self, content):
-        """Ensure OPF has correct cover meta tag."""
+        """Ensure OPF has correct cover meta tag.
+
+        Handles namespaces and any attribute order.
+        """
         cover_id = None
-        
-        # Try to find cover image ID
-        patterns = [
-            r'<item[^>]+id="([^"]+)"[^>]+properties="[^"]*cover-image[^"]*"',
-            r'<item[^>]+properties="[^"]*cover-image[^"]*"[^>]+id="([^"]+)"',
-            r'<item[^>]+id="([^"]+)"[^>]+href="[^"]*cover[^"]*"[^>]*media-type="image/',
-            r'<item[^>]+href="[^"]*cover[^"]*"[^>]+id="([^"]+)"[^>]*media-type="image/',
-            r'<item[^>]+id="([^"]*cover[^"]*)"[^>]+media-type="image/',
-            r'<item[^>]+media-type="image/[^"]*"[^>]+id="([^"]*cover[^"]*)"',
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
-                cover_id = match.group(1)
-                break
-        
+        m = None
+
+        # Try 1: properties="cover-image" (with namespace support)
+        if not cover_id:
+            m = re.search(r'<\w+:?item[^>]+id="([^"]+)"[^>]+properties="[^"]*cover-image[^"]*"', content, re.IGNORECASE)
+            if m:
+                cover_id = m.group(1)
+        if not cover_id:
+            m = re.search(r'<\w+:?item[^>]+properties="[^"]*cover-image[^"]*"[^>]+id="([^"]+)"', content, re.IGNORECASE)
+            if m:
+                cover_id = m.group(1)
+
+        # Try 2: href contains "cover" and is an image (any attribute order)
+        if not cover_id:
+            m = re.search(r'<\w+:?item[^>]*id="([^"]+)"[^>]*href="[^"]*cover[^"]*"[^>]*media-type="image/', content, re.IGNORECASE)
+            if m:
+                cover_id = m.group(1)
+        if not cover_id:
+            m = re.search(r'<\w+:?item[^>]*href="[^"]*cover[^"]*"[^>]*id="([^"]+)"[^>]*media-type="image/', content, re.IGNORECASE)
+            if m:
+                cover_id = m.group(1)
+
+        # Try 3: id contains "cover" and is an image (any attribute order with namespace)
+        if not cover_id:
+            m = re.search(r'<\w+:?item[^>]*id="([^"]*cover[^"]*)"[^>]*media-type="image/', content, re.IGNORECASE)
+            if m:
+                cover_id = m.group(1)
+        if not cover_id:
+            m = re.search(r'<\w+:?item[^>]*media-type="image/[^"]*"[^>]*id="([^"]*cover[^"]*)"', content, re.IGNORECASE)
+            if m:
+                cover_id = m.group(1)
+
         if not cover_id:
             return {'content': content, 'fixed': False}
-        
-        # Check if cover meta exists
-        meta_match = (re.search(r'<meta\s+name=["\']cover["\']\s+content=["\']([^"\']+)["\']', content) or
-                     re.search(r'<meta\s+content=["\']([^"\']+)["\']\s+name=["\']cover["\']', content))
-        
+
+        # Check if cover meta exists (handle namespaces like opf:meta)
+        meta_match = (re.search(r'<\w+:?meta\s+name=["\']cover["\']\s+content=["\']([^"\']+)["\']', content) or
+                     re.search(r'<\w+:?meta\s+content=["\']([^"\']+)["\']\s+name=["\']cover["\']', content))
+
         if meta_match:
             current_value = meta_match.group(1)
             if '/' in current_value or current_value != cover_id:
-                # Fix incorrect cover meta
+                # Fix incorrect cover meta (handle namespaces)
                 content = re.sub(
-                    r'<meta\s+name=["\']cover["\']\s+content=["\'][^"\']+["\']\s*/?>',
+                    r'<\w+:?meta\s+name=["\']cover["\']\s+content=["\'][^"\']+["\']\s*/?>',
                     f'<meta name="cover" content="{cover_id}" />',
                     content
                 )
                 content = re.sub(
-                    r'<meta\s+content=["\'][^"\']+["\']\s+name=["\']cover["\']\s*/?>',
+                    r'<\w+:?meta\s+content=["\'][^"\']+["\']\s+name=["\']cover["\']\s*/?>',
                     f'<meta name="cover" content="{cover_id}" />',
                     content
                 )
                 return {'content': content, 'fixed': True}
             return {'content': content, 'fixed': False}
-        
-        # Add missing cover meta (only replace first occurrence)
-        content = content.replace(
-            '</metadata>',
-            f'    <meta name="cover" content="{cover_id}"/>\n  </metadata>',
-            1
-        )
-        return {'content': content, 'fixed': True}
+
+        # Add missing cover meta
+        idx = content.find('</metadata>')
+        if idx != -1:
+            return {
+                'content': content[:idx] + f'    <meta name="cover" content="{cover_id}"/>\n  </metadata>' + content[idx + 11:],
+                'fixed': True
+            }
+
+        return {'content': content, 'fixed': False}
     
     @staticmethod
     def _format_bytes(b):
