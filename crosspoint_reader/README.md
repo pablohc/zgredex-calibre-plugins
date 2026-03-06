@@ -2,7 +2,7 @@
 
 A Calibre device driver plugin for CrossPoint e-readers with built-in EPUB image conversion for optimal e-reader compatibility.
 
-## Version 0.2.3
+## Version 0.2.6
 
 ## Features
 
@@ -99,6 +99,9 @@ Logs are stored in two locations:
 This plugin is provided as-is for use with CrossPoint Reader devices.
 
 ## Changelog
+
+### v0.2.6
+- Fixed: OPF cover meta tag now handles namespaces (e.g., `opf:meta`, `opf:item`) and any attribute order
 
 ### v0.2.5
 - Fixed: Deleting books from Calibre now works correctly
